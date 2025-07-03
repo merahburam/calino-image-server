@@ -226,7 +226,7 @@ app.post('/api/history/:userId', async (req, res) => {
       WHERE user_id = $1 
       AND id NOT IN (
         SELECT id FROM user_history 
-        WHERE user_id = $1 
+        WHERE user_id = $2 
         ORDER BY timestamp DESC 
         LIMIT 200
       )
