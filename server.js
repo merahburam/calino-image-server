@@ -297,6 +297,18 @@ app.post('/api/history/:userId/update-frame', async (req, res) => {
   }
 });
 
+// Test endpoint for license verification
+app.get('/api/verify-license', (req, res) => {
+  res.json({ 
+    message: 'License verification endpoint is working',
+    method: 'POST',
+    expectedBody: {
+      productId: 'string',
+      licenseKey: 'string'
+    }
+  });
+});
+
 // Verify Gumroad license endpoint
 app.post('/api/verify-license', async (req, res) => {
   try {
