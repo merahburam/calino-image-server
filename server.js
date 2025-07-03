@@ -41,6 +41,21 @@ async function initializeDatabase() {
       )
     `);
     
+    // Create license_usage table if it doesn't exist
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS license_usage (
+        id SERIAL PRIMARY KEY,
+        license_key VARCHAR(255) UNIQUE NOT NULL,
+        user_id VARCHAR(255) NOT NULL,
+        product_id VARCHAR(255) NOT NULL,
+        product_tier VARCHAR(50) NOT NULL,
+        flowers_granted INTEGER NOT NULL,
+        activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        gumroad_data JSONB,
+        status VARCHAR(20) DEFAULT 'active'
+      )
+    `);
+    
     // Create indexes for better performance
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_user_history_user_id ON user_history(user_id)
@@ -52,6 +67,14 @@ async function initializeDatabase() {
     
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_user_history_item_id ON user_history(item_id)
+    `);
+    
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_license_usage_key ON license_usage(license_key)
+    `);
+    
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_license_usage_user ON license_usage(user_id)
     `);
     
     client.release();
@@ -309,48 +332,104 @@ app.get('/api/verify-license', (req, res) => {
   });
 });
 
-// Verify Gumroad license endpoint
+// Verify Gumroad license endpoint with database tracking
 app.post('/api/verify-license', async (req, res) => {
   try {
-    const { productId, licenseKey } = req.body;
+    const { productId, licenseKey, userId } = req.body;
     
-    if (!productId || !licenseKey) {
-      return res.status(400).json({ error: 'productId and licenseKey are required' });
+    if (!productId || !licenseKey || !userId) {
+      return res.status(400).json({ error: 'productId, licenseKey, and userId are required' });
     }
     
-    // Use environment variable for Gumroad access token
-    const GUMROAD_ACCESS_TOKEN = process.env.GUMROAD_ACCESS_TOKEN;
+    const client = await pool.connect();
     
-    if (!GUMROAD_ACCESS_TOKEN) {
-      return res.status(500).json({ error: 'Gumroad access token not configured' });
-    }
-    
-    const formData = new URLSearchParams();
-    formData.append('access_token', GUMROAD_ACCESS_TOKEN);
-    formData.append('product_id', productId);
-    formData.append('license_key', licenseKey);
-    
-    const response = await fetch('https://api.gumroad.com/v2/licenses/verify', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: formData
-    });
-    
-    const data = await response.json();
-    
-    if (response.ok && data.success) {
-      // Return successful verification
-      res.json({
-        success: true,
-        purchase: data.purchase
+    try {
+      // First, check if this license key has already been used
+      const existingLicense = await client.query(
+        'SELECT * FROM license_usage WHERE license_key = $1',
+        [licenseKey]
+      );
+      
+      if (existingLicense.rows.length > 0) {
+        const usage = existingLicense.rows[0];
+        client.release();
+        return res.json({
+          success: false,
+          message: `This license key has already been activated on ${usage.activated_at.toLocaleDateString()} by user ${usage.user_id}. Each license can only be used once.`,
+          alreadyUsed: true
+        });
+      }
+      
+      // Use environment variable for Gumroad access token
+      const GUMROAD_ACCESS_TOKEN = process.env.GUMROAD_ACCESS_TOKEN;
+      
+      if (!GUMROAD_ACCESS_TOKEN) {
+        client.release();
+        return res.status(500).json({ error: 'Gumroad access token not configured' });
+      }
+      
+      // Verify with Gumroad API
+      const formData = new URLSearchParams();
+      formData.append('access_token', GUMROAD_ACCESS_TOKEN);
+      formData.append('product_id', productId);
+      formData.append('license_key', licenseKey);
+      formData.append('increment_uses_count', 'false');
+      
+      const response = await fetch('https://api.gumroad.com/v2/licenses/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: formData
       });
-    } else {
-      res.json({
-        success: false,
-        message: data.message || 'License verification failed'
-      });
+      
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
+        // Determine product tier and flowers based on productId
+        const productTierMap = {
+          '2FqGqjM16Jjs0NDRtncN4g==': { tier: 'starter', flowers: 50 },
+          'wIY3NX2VLnJ48nTz0ZVTIA==': { tier: 'creator', flowers: 130 },
+          '711rWT3AqbdSnNL0p9MxIw==': { tier: 'pro', flowers: 300 }
+        };
+        
+        const productInfo = productTierMap[productId] || { tier: 'unknown', flowers: 0 };
+        
+        // Save the license usage to our database
+        await client.query(`
+          INSERT INTO license_usage (
+            license_key, user_id, product_id, product_tier, flowers_granted, gumroad_data
+          ) VALUES ($1, $2, $3, $4, $5, $6)
+        `, [
+          licenseKey,
+          userId,
+          productId,
+          productInfo.tier,
+          productInfo.flowers,
+          JSON.stringify(data.purchase)
+        ]);
+        
+        client.release();
+        
+        // Return successful verification with our tier info
+        res.json({
+          success: true,
+          purchase: data.purchase,
+          tier: productInfo.tier,
+          flowers: productInfo.flowers,
+          tokensGranted: productInfo.flowers // For backward compatibility
+        });
+      } else {
+        client.release();
+        res.json({
+          success: false,
+          message: data.message || 'License verification failed with Gumroad'
+        });
+      }
+      
+    } catch (dbError) {
+      client.release();
+      throw dbError;
     }
     
   } catch (error) {
@@ -358,6 +437,52 @@ app.post('/api/verify-license', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Internal server error during license verification'
+    });
+  }
+});
+
+// Admin endpoint to view license usage
+app.get('/api/admin/licenses', async (req, res) => {
+  try {
+    const { page = 0, limit = 50 } = req.query;
+    
+    const client = await pool.connect();
+    
+    const offset = parseInt(page) * parseInt(limit);
+    
+    // Get license usage with pagination
+    const result = await client.query(`
+      SELECT 
+        license_key,
+        user_id,
+        product_tier,
+        flowers_granted,
+        activated_at,
+        status,
+        gumroad_data->>'product_name' as product_name,
+        gumroad_data->>'email' as email
+      FROM license_usage 
+      ORDER BY activated_at DESC 
+      LIMIT $1 OFFSET $2
+    `, [parseInt(limit), offset]);
+    
+    // Get total count
+    const countResult = await client.query('SELECT COUNT(*) FROM license_usage');
+    const totalItems = parseInt(countResult.rows[0].count);
+    
+    client.release();
+    
+    res.json({
+      licenses: result.rows,
+      totalItems,
+      totalPages: Math.ceil(totalItems / parseInt(limit)),
+      currentPage: parseInt(page)
+    });
+    
+  } catch (error) {
+    console.error('Error getting license usage:', error);
+    res.status(500).json({
+      error: 'Failed to get license usage'
     });
   }
 });
