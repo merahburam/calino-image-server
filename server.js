@@ -55,7 +55,6 @@ async function initializeDatabase() {
     `);
     
     client.release();
-    console.log('✅ Database initialized successfully');
     
   } catch (error) {
     console.error('❌ Database initialization failed:', error);
@@ -325,9 +324,6 @@ async function startServer() {
     
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📊 Images available at: http://localhost:${PORT}/images/calino/`);
-      console.log(`📚 History API available at: http://localhost:${PORT}/api/history/`);
-      console.log(`🔍 Database test: http://localhost:${PORT}/api/db-test`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
