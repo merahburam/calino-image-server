@@ -220,7 +220,7 @@ app.post('/api/history/:userId', async (req, res) => {
       [userId]
     );
     
-    // Clean up old records - keep only the most recent 200 per user
+    // Implement rolling limit - keep only the most recent 50 per user
     await client.query(`
       DELETE FROM user_history 
       WHERE user_id = $1 
@@ -228,7 +228,7 @@ app.post('/api/history/:userId', async (req, res) => {
         SELECT id FROM user_history 
         WHERE user_id = $2 
         ORDER BY timestamp DESC 
-        LIMIT 200
+        LIMIT 50
       )
     `, [userId, userId]);
     
