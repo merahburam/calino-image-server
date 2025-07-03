@@ -297,6 +297,59 @@ app.post('/api/history/:userId/update-frame', async (req, res) => {
   }
 });
 
+// Verify Gumroad license endpoint
+app.post('/api/verify-license', async (req, res) => {
+  try {
+    const { productId, licenseKey } = req.body;
+    
+    if (!productId || !licenseKey) {
+      return res.status(400).json({ error: 'productId and licenseKey are required' });
+    }
+    
+    // Use environment variable for Gumroad access token
+    const GUMROAD_ACCESS_TOKEN = process.env.GUMROAD_ACCESS_TOKEN;
+    
+    if (!GUMROAD_ACCESS_TOKEN) {
+      return res.status(500).json({ error: 'Gumroad access token not configured' });
+    }
+    
+    const formData = new URLSearchParams();
+    formData.append('access_token', GUMROAD_ACCESS_TOKEN);
+    formData.append('product_id', productId);
+    formData.append('license_key', licenseKey);
+    
+    const response = await fetch('https://api.gumroad.com/v2/licenses/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: formData
+    });
+    
+    const data = await response.json();
+    
+    if (response.ok && data.success) {
+      // Return successful verification
+      res.json({
+        success: true,
+        purchase: data.purchase
+      });
+    } else {
+      res.json({
+        success: false,
+        message: data.message || 'License verification failed'
+      });
+    }
+    
+  } catch (error) {
+    console.error('License verification error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error during license verification'
+    });
+  }
+});
+
 // Test database connection endpoint
 app.get('/api/db-test', async (req, res) => {
   try {
