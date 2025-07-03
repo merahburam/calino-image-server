@@ -197,6 +197,9 @@ app.post('/api/history/:userId', async (req, res) => {
         timestamp = EXCLUDED.timestamp
     `;
     
+    // Convert ISO string timestamp to Date object
+    const timestamp = historyItem.timestamp ? new Date(historyItem.timestamp) : new Date();
+    
     await client.query(query, [
       userId,
       historyItem.id,
@@ -208,7 +211,7 @@ app.post('/api/history/:userId', async (req, res) => {
       historyItem.quality,
       historyItem.dimensions?.width,
       historyItem.dimensions?.height,
-      historyItem.timestamp
+      timestamp
     ]);
     
     // Get total count for this user
@@ -238,7 +241,16 @@ app.post('/api/history/:userId', async (req, res) => {
     
   } catch (error) {
     console.error('Error saving history:', error);
-    res.status(500).json({ error: 'Failed to save history' });
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code,
+      detail: error.detail
+    });
+    res.status(500).json({ 
+      error: 'Failed to save history',
+      details: error.message 
+    });
   }
 });
 
