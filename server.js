@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs').promises;
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,68 +11,163 @@ app.use(express.json({ limit: '50mb' })); // Support large base64 images
 
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
+// PostgreSQL connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
+// Initialize database tables
+async function initializeDatabase() {
+  try {
+    const client = await pool.connect();
+    
+    // Create user_history table if it doesn't exist
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_history (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(255) NOT NULL,
+        item_id VARCHAR(255) NOT NULL UNIQUE,
+        prompt TEXT NOT NULL,
+        image_url TEXT,
+        original_image_url TEXT,
+        frame_id VARCHAR(255),
+        frame_name VARCHAR(255),
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        quality VARCHAR(50),
+        width INTEGER,
+        height INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Create indexes for better performance
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_history_user_id ON user_history(user_id)
+    `);
+    
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_history_timestamp ON user_history(timestamp DESC)
+    `);
+    
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_history_item_id ON user_history(item_id)
+    `);
+    
+    client.release();
+    console.log('✅ Database initialized successfully');
+    
+  } catch (error) {
+    console.error('❌ Database initialization failed:', error);
+    throw error;
+  }
+}
+
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'Calino Image Server', 
+    message: 'Calino Image Server with PostgreSQL', 
     status: 'running',
+    database: 'connected',
     endpoints: {
-      images: '/images/calino/'
+      images: '/images/calino/',
+      history: '/api/history/:userId'
     }
   });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'healthy' });
+app.get('/health', async (req, res) => {
+  try {
+    // Test database connection
+    const client = await pool.connect();
+    await client.query('SELECT NOW()');
+    client.release();
+    
+    res.json({ 
+      status: 'healthy',
+      database: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'unhealthy',
+      database: 'disconnected',
+      error: error.message
+    });
+  }
 });
 
-// History storage endpoints
-const historyDataPath = path.join(__dirname, 'history-data');
-
-// Ensure history data directory exists
-async function ensureHistoryDirectory() {
-  try {
-    await fs.mkdir(historyDataPath, { recursive: true });
-  } catch (error) {
-    console.error('Error creating history directory:', error);
-  }
-}
-
-// Get user history
+// Get user history with pagination and search
 app.get('/api/history/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const { page = 0, limit = 10, search = '' } = req.query;
     
-    const userHistoryPath = path.join(historyDataPath, `${userId}.json`);
+    const client = await pool.connect();
     
-    let history = [];
-    try {
-      const historyData = await fs.readFile(userHistoryPath, 'utf8');
-      history = JSON.parse(historyData);
-    } catch (error) {
-      // File doesn't exist yet, return empty history
-      history = [];
+    let query = `
+      SELECT item_id, prompt, image_url, original_image_url, frame_id, frame_name, 
+             timestamp, quality, width, height
+      FROM user_history 
+      WHERE user_id = $1
+    `;
+    let queryParams = [userId];
+    
+    // Add search filter if provided
+    if (search && search.trim()) {
+      query += ` AND prompt ILIKE $2`;
+      queryParams.push(`%${search.trim()}%`);
     }
     
-    // Filter by search if provided
-    let filteredHistory = history;
-    if (search) {
-      const searchLower = search.toLowerCase();
-      filteredHistory = history.filter(item => 
-        item.prompt.toLowerCase().includes(searchLower)
-      );
+    // Add ordering and pagination
+    query += ` ORDER BY timestamp DESC`;
+    
+    if (limit && limit !== 'all') {
+      const limitNum = parseInt(limit);
+      const offsetNum = parseInt(page) * limitNum;
+      query += ` LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`;
+      queryParams.push(limitNum, offsetNum);
     }
     
-    // Pagination
-    const startIndex = parseInt(page) * parseInt(limit);
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedHistory = filteredHistory.slice(startIndex, endIndex);
+    const result = await client.query(query, queryParams);
+    
+    // Get total count for pagination
+    let countQuery = `SELECT COUNT(*) FROM user_history WHERE user_id = $1`;
+    let countParams = [userId];
+    
+    if (search && search.trim()) {
+      countQuery += ` AND prompt ILIKE $2`;
+      countParams.push(`%${search.trim()}%`);
+    }
+    
+    const countResult = await client.query(countQuery, countParams);
+    const totalItems = parseInt(countResult.rows[0].count);
+    
+    client.release();
+    
+    // Format response to match expected structure
+    const items = result.rows.map(row => ({
+      id: row.item_id,
+      prompt: row.prompt,
+      imageUrl: row.image_url,
+      originalImageUrl: row.original_image_url,
+      frameId: row.frame_id,
+      frameName: row.frame_name,
+      timestamp: row.timestamp,
+      quality: row.quality,
+      dimensions: {
+        width: row.width,
+        height: row.height
+      }
+    }));
+    
+    const limitNum = limit === 'all' ? totalItems : parseInt(limit);
+    const totalPages = Math.ceil(totalItems / limitNum);
     
     res.json({
-      items: paginatedHistory,
-      totalPages: Math.ceil(filteredHistory.length / parseInt(limit)),
+      items,
+      totalPages,
       currentPage: parseInt(page),
-      totalItems: history.length
+      totalItems
     });
     
   } catch (error) {
@@ -87,28 +182,59 @@ app.post('/api/history/:userId', async (req, res) => {
     const { userId } = req.params;
     const historyItem = req.body;
     
-    const userHistoryPath = path.join(historyDataPath, `${userId}.json`);
+    const client = await pool.connect();
     
-    // Load existing history
-    let history = [];
-    try {
-      const historyData = await fs.readFile(userHistoryPath, 'utf8');
-      history = JSON.parse(historyData);
-    } catch (error) {
-      // File doesn't exist yet, start with empty array
-      history = [];
-    }
+    // Insert new history item
+    const query = `
+      INSERT INTO user_history (
+        user_id, item_id, prompt, image_url, original_image_url, 
+        frame_id, frame_name, quality, width, height, timestamp
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT (item_id) DO UPDATE SET
+        prompt = EXCLUDED.prompt,
+        image_url = EXCLUDED.image_url,
+        original_image_url = EXCLUDED.original_image_url,
+        timestamp = EXCLUDED.timestamp
+    `;
     
-    // Add new item to the beginning
-    history.unshift(historyItem);
+    await client.query(query, [
+      userId,
+      historyItem.id,
+      historyItem.prompt,
+      historyItem.imageUrl,
+      historyItem.originalImageUrl,
+      historyItem.frameId,
+      historyItem.frameName,
+      historyItem.quality,
+      historyItem.dimensions?.width,
+      historyItem.dimensions?.height,
+      historyItem.timestamp
+    ]);
     
-    // Keep only the most recent 200 items on server
-    history = history.slice(0, 200);
+    // Get total count for this user
+    const countResult = await client.query(
+      'SELECT COUNT(*) FROM user_history WHERE user_id = $1',
+      [userId]
+    );
     
-    // Save back to file
-    await fs.writeFile(userHistoryPath, JSON.stringify(history, null, 2));
+    // Clean up old records - keep only the most recent 200 per user
+    await client.query(`
+      DELETE FROM user_history 
+      WHERE user_id = $1 
+      AND id NOT IN (
+        SELECT id FROM user_history 
+        WHERE user_id = $1 
+        ORDER BY timestamp DESC 
+        LIMIT 200
+      )
+    `, [userId, userId]);
     
-    res.json({ success: true, totalItems: history.length });
+    client.release();
+    
+    res.json({ 
+      success: true, 
+      totalItems: parseInt(countResult.rows[0].count)
+    });
     
   } catch (error) {
     console.error('Error saving history:', error);
@@ -116,11 +242,41 @@ app.post('/api/history/:userId', async (req, res) => {
   }
 });
 
-// Initialize history directory on startup
-ensureHistoryDirectory();
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Images available at: http://localhost:${PORT}/images/calino/`);
-  console.log(`History API available at: http://localhost:${PORT}/api/history/`);
+// Test database connection endpoint
+app.get('/api/db-test', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    const result = await client.query('SELECT NOW() as current_time, version() as postgres_version');
+    client.release();
+    
+    res.json({
+      connected: true,
+      current_time: result.rows[0].current_time,
+      postgres_version: result.rows[0].postgres_version
+    });
+  } catch (error) {
+    res.status(500).json({
+      connected: false,
+      error: error.message
+    });
+  }
 });
+
+// Initialize database and start server
+async function startServer() {
+  try {
+    await initializeDatabase();
+    
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`📊 Images available at: http://localhost:${PORT}/images/calino/`);
+      console.log(`📚 History API available at: http://localhost:${PORT}/api/history/`);
+      console.log(`🔍 Database test: http://localhost:${PORT}/api/db-test`);
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+startServer();
