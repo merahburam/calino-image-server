@@ -254,6 +254,50 @@ app.post('/api/history/:userId', async (req, res) => {
   }
 });
 
+// Update frame ID for a specific history item
+app.post('/api/history/:userId/update-frame', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { itemId, frameId } = req.body;
+    
+    if (!itemId || !frameId) {
+      return res.status(400).json({ error: 'itemId and frameId are required' });
+    }
+    
+    const client = await pool.connect();
+    
+    const query = `
+      UPDATE user_history 
+      SET frame_id = $1 
+      WHERE user_id = $2 AND item_id = $3
+    `;
+    
+    const result = await client.query(query, [frameId, userId, itemId]);
+    
+    client.release();
+    
+    if (result.rowCount > 0) {
+      res.json({ 
+        success: true, 
+        message: `Updated frameId for item ${itemId}`,
+        updatedRows: result.rowCount
+      });
+    } else {
+      res.status(404).json({ 
+        success: false, 
+        message: `No history item found with id ${itemId} for user ${userId}` 
+      });
+    }
+    
+  } catch (error) {
+    console.error('Error updating frame ID:', error);
+    res.status(500).json({ 
+      error: 'Failed to update frame ID',
+      details: error.message 
+    });
+  }
+});
+
 // Test database connection endpoint
 app.get('/api/db-test', async (req, res) => {
   try {
