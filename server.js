@@ -152,6 +152,15 @@ app.get('/api/history/:userId', async (req, res) => {
     
     const result = await client.query(query, queryParams);
     
+    // Debug logging to see what's being retrieved
+    console.log(`History query for user ${userId}:`, {
+      search: search?.trim() || 'none',
+      page: page,
+      limit: limit,
+      resultCount: result.rows.length,
+      sampleIds: result.rows.slice(0, 3).map(r => ({ id: r.item_id, hasImage: !!r.image_url, timestamp: r.timestamp }))
+    });
+    
     // Get total count for pagination
     let countQuery = `SELECT COUNT(*) FROM user_history WHERE user_id = $1`;
     let countParams = [userId];
