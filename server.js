@@ -8,7 +8,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Support large base64 images
+app.use(express.json({ limit: '100mb' })); // Support large base64 images
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
