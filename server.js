@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const sharp = require('sharp');
 const { Pool } = require('pg');
 
 const app = express();
