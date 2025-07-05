@@ -241,7 +241,7 @@ app.post('/api/history/:userId', async (req, res) => {
           // Handle URL
           const imageResponse = await fetch(historyItem.imageUrl);
           if (imageResponse.ok) {
-            imageBuffer = await imageResponse.buffer();
+            imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
           } else {
             throw new Error(`Failed to fetch image: ${imageResponse.status}`);
           }
