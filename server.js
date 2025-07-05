@@ -207,13 +207,65 @@ app.get('/api/history/:userId', async (req, res) => {
   }
 });
 
-// Save history item
+// Save history item with image compression
 app.post('/api/history/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const historyItem = req.body;
     
+    console.log('Saving history item:', {
+      userId,
+      itemId: historyItem.id,
+      hasImageUrl: !!historyItem.imageUrl,
+      hasOriginalImageUrl: !!historyItem.originalImageUrl,
+      prompt: historyItem.prompt?.substring(0, 50) + '...'
+    });
+    
     const client = await pool.connect();
+    
+    let compressedImageUrl = historyItem.imageUrl;
+    let originalImageUrl = historyItem.originalImageUrl || historyItem.imageUrl;
+    
+    // If we have an image URL that's not already compressed, compress it
+    if (historyItem.imageUrl && !historyItem.imageUrl.startsWith('data:image/webp')) {
+      try {
+        console.log('Compressing image for storage...');
+        
+        let imageBuffer;
+        if (historyItem.imageUrl.startsWith('data:image/')) {
+          // Handle base64 data
+          const base64Data = historyItem.imageUrl.split(',')[1];
+          imageBuffer = Buffer.from(base64Data, 'base64');
+        } else {
+          // Handle URL
+          const imageResponse = await fetch(historyItem.imageUrl);
+          if (imageResponse.ok) {
+            imageBuffer = await imageResponse.buffer();
+          } else {
+            throw new Error(`Failed to fetch image: ${imageResponse.status}`);
+          }
+        }
+        
+        // Compress to WebP format (much smaller, same quality)
+        const compressedBuffer = await sharp(imageBuffer)
+          .webp({ quality: 95, lossless: false }) // High quality WebP
+          .toBuffer();
+        
+        // Convert to base64 for storage
+        const compressedBase64 = `data:image/webp;base64,${compressedBuffer.toString('base64')}`;
+        compressedImageUrl = compressedBase64;
+        
+        console.log('Image compression successful:', {
+          originalSize: imageBuffer.length,
+          compressedSize: compressedBuffer.length,
+          compressionRatio: Math.round((1 - compressedBuffer.length / imageBuffer.length) * 100) + '%'
+        });
+        
+      } catch (compressionError) {
+        console.warn('Image compression failed, using original:', compressionError.message);
+        // Continue with original image if compression fails
+      }
+    }
     
     // Insert new history item
     const query = `
@@ -235,8 +287,8 @@ app.post('/api/history/:userId', async (req, res) => {
       userId,
       historyItem.id,
       historyItem.prompt,
-      historyItem.imageUrl,
-      historyItem.originalImageUrl,
+      compressedImageUrl, // Store compressed version
+      originalImageUrl,   // Keep original URL for recreation
       historyItem.frameId,
       historyItem.frameName,
       historyItem.quality,
@@ -251,7 +303,7 @@ app.post('/api/history/:userId', async (req, res) => {
       [userId]
     );
     
-    // Implement rolling limit - keep only the most recent 50 per user
+    // Implement rolling limit - keep only the most recent 30 per user
     await client.query(`
       DELETE FROM user_history 
       WHERE user_id = $1 
@@ -259,11 +311,16 @@ app.post('/api/history/:userId', async (req, res) => {
         SELECT id FROM user_history 
         WHERE user_id = $2 
         ORDER BY timestamp DESC 
-        LIMIT 50
+        LIMIT 30
       )
     `, [userId, userId]);
     
     client.release();
+    
+    console.log('History item saved successfully:', {
+      itemId: historyItem.id,
+      totalItems: parseInt(countResult.rows[0].count)
+    });
     
     res.json({ 
       success: true, 
