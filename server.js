@@ -456,9 +456,9 @@ app.post('/api/verify-license', async (req, res) => {
       if (response.ok && data.success) {
         // Determine product tier and flowers based on productId
         const productTierMap = {
-          '2FqGqjM16Jjs0NDRtncN4g==': { tier: 'starter', flowers: 50 },
-          'wIY3NX2VLnJ48nTz0ZVTIA==': { tier: 'creator', flowers: 130 },
-          '711rWT3AqbdSnNL0p9MxIw==': { tier: 'pro', flowers: 300 }
+          '2FqGqjM16Jjs0NDRtncN4g==': { tier: 'starter', flowers: 80 },
+          'wIY3NX2VLnJ48nTz0ZVTIA==': { tier: 'creator', flowers: 200 },
+          '711rWT3AqbdSnNL0p9MxIw==': { tier: 'pro', flowers: 450 }
         };
         
         const productInfo = productTierMap[productId] || { tier: 'unknown', flowers: 0 };
